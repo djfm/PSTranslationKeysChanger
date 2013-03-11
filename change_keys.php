@@ -1,5 +1,19 @@
 #!/usr/bin/php
 <?php
+
+/*
+
+Purpose: to use change the keys used in a PrestaShop translation file.
+
+Usage: change_keys.php iso.gzip (en.gzip | changes.csv)+
+
+Where iso.gzip is the pack to change keys of and changes.csv is a CSV file (with headers 'Old Key' and 'New English Text' at least).
+
+The resulting pack will have *both* the old and the new keys, any superfluous translations will be removed after the translation admin tab
+is visited from PS BO and the translations are submitted once.
+
+*/
+
 include_once 'Archive/Tar.php'; 
 
 @ini_set('display_errors', 'on');
@@ -66,16 +80,29 @@ function file_list($dir)
 	return $files;
 }
 
+//like addslashes but removes superfluous backslashes before adding them!
+function slashify($str)
+{
+	return preg_replace('/\\\\*([\'"])/', "\\\\$1", $str);
+}
+
 /************************************************/
 /************************************************/
 /************************************************/
 
+/************************************************/
+/*		    REAL STUFF STARTS HERE   			*/
+/************************************************/
+
+
+//check the arguments
 if(count($argv) < 3)
 {
 	echo "Usage: " . basename($argv[0]) . " gzip_to_modify english_gzip_or_csv_to_use [english_gzip_or_csv_to_use ...]\n";
 	exit;
 }
 
+//the file we want to change the keys of
 $target 	= $argv[1];
 
 if(!file_exists($target))
@@ -84,15 +111,14 @@ if(!file_exists($target))
 	exit;
 }
 
+//file by file key changes, pupulated using en_xxx.gzip packs
 $en_changes_in_files = array();
+//global key changes (no file by file check is performed)
 $en_uncontextualized_changes = array();
+//count the number of English keys we want to change
 $en_count   = 0;
 
-function slashify($str)
-{
-	return preg_replace('/\\\\*([\'"])/', "\\\\$1", $str);
-}
-
+//read a GZIP (en) file and stores the key changes in it by comparing the new string's md5 with the old md5
 function readGZIPChanges($src, &$en_changes_in_files)
 {
 	$total = 0;
@@ -125,9 +151,9 @@ function readGZIPChanges($src, &$en_changes_in_files)
 					$new_md5 = md5(slashify($value));
 					if($md5 != $new_md5)
 					{
-						//if($arr == '_LANGADM' and strpos($value, '&lt') !== false)echo "Changed: $value\n";
+						//$en_changes_in_files[$filename][$key] is an array because we allow to change a key with several substitutes
 						if(!isset($en_changes_in_files[$filename][$key]))$en_changes_in_files[$filename][$key] = array();
-						$en_changes_in_files[$filename][$key][$m[1] . $new_md5] = 0;
+						$en_changes_in_files[$filename][$key][$m[1] . $new_md5] = 0; //use count of this new key
 					}
 				}
 			}
@@ -171,6 +197,7 @@ function readCSVChanges($src, &$en_uncontextualized_changes)
 	return count($en_uncontextualized_changes) - $count;
 }
 
+//reads changes from either CSV file or en_xxx.gzip
 function readChanges($src, &$en_changes_in_files, &$en_uncontextualized_changes)
 {
 	if(!file_exists($src))
@@ -195,27 +222,30 @@ function readChanges($src, &$en_changes_in_files, &$en_uncontextualized_changes)
 	}
 }
 
+//reads $argv for key change files (starting at index 2)
 $en_count = 0;
 for($i = 2; $i < count($argv); $i+=1)
 {
 	$en_count += readChanges($argv[$i], $en_changes_in_files, $en_uncontextualized_changes);
 }
 
-$target_gzip = new Archive_Tar($target);
+//the iso code of our target pack
 $iso = basename($target, ".gzip");
 
+//output file, in current directory (warning!!)
 $dst = "$iso.gzip";
 if(file_exists($dst))
 {
 	unlink($dst);
 }
 
-$new_target_gzip = new Archive_Tar($dst, 'gz');
-
 $dir     = tempdir();
 $out_dir = tempdir();
 
+$target_gzip = new Archive_Tar($target);
+
 $target_gzip->extract($dir);
+
 foreach($target_gzip->listContent() as $desc)
 {
 	$filename = $desc['filename'];
@@ -244,6 +274,7 @@ foreach($target_gzip->listContent() as $desc)
 					{
 						$use_count += 1;
 
+						//do not overwrite if the new key is already set
 						if(!isset($lang[$new_key]))
 						{
 							$lang[$new_key] = $lang[$old_key];
@@ -263,6 +294,7 @@ foreach($target_gzip->listContent() as $desc)
 					{
 						$use_count += 1;
 
+						//do not overwrite if the new key is already set
 						if(!isset($lang[$new_key]))
 						{
 							$lang[$new_key] = $lang[$old_key];
@@ -287,10 +319,16 @@ foreach($target_gzip->listContent() as $desc)
 	file_put_contents_with_parents("$out_dir/$filename", $source);
 
 }
+//remove dir where we extracted the target gzip
 rrmdir($dir);
+
+//create our output archive
+$new_target_gzip = new Archive_Tar($dst, 'gz');
 $new_target_gzip->createModify(file_list($out_dir),'',$out_dir);
+//remove tmp output dir
 rrmdir($out_dir);
 
+//see what happened
 $count         = 0;
 $show_not_used = function($arr) use (&$count)
 {
@@ -321,3 +359,5 @@ foreach($en_changes_in_files as $file => $changes)
 $show_not_used($en_uncontextualized_changes);
 
 echo "\nChanged $count keys in '$target' (of $en_count)\n";
+
+//that's all folks!
