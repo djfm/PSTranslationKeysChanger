@@ -83,7 +83,7 @@ function file_list($dir)
 //like addslashes but removes superfluous backslashes before adding them!
 function slashify($str)
 {
-	return preg_replace('/\\\\*([\'"])/', "\\\\$1", $str);
+	return preg_replace('/\\\\*([\'])/', "\\\\$1", $str);
 }
 
 /************************************************/
