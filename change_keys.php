@@ -5,7 +5,7 @@
 
 Purpose: to use change the keys used in a PrestaShop translation file.
 
-Usage: change_keys.php iso.gzip (en.gzip | changes.csv)+
+Usage: change_keys.php iso.gzip (en.gzip | changes.csv)*
 
 Where iso.gzip is the pack to change keys of and changes.csv is a CSV file (with headers 'Old Key' and 'New English Text' at least).
 
@@ -83,7 +83,35 @@ function file_list($dir)
 //like addslashes but removes superfluous backslashes before adding them!
 function slashify($str)
 {
-	return preg_replace('/\\\\*([\'"])/', "\\\\$1", $str);
+	return preg_replace('/\\\\*([\'])/', "\\\\$1", $str);
+}
+
+function getOpts()
+{
+	global $argv;
+	$options = array();
+	$n       = count($argv);
+
+	for($i=1; $i < $n; $i+=1)
+	{
+		$m = array();
+		if(preg_match('/^--(.*)$/', $argv[$i], $m))
+		{
+			unset($argv[$i]);
+			$i+=1;
+			if($i < $n)
+			{
+				$options[$m[1]] = $argv[$i];
+				unset($argv[$i]);
+			}
+			else 
+			{
+				$options[$m[1]] = null;
+			}
+		}
+	}
+
+	return $options;
 }
 
 /************************************************/
@@ -95,10 +123,12 @@ function slashify($str)
 /************************************************/
 
 
+$options = getOpts();
+
 //check the arguments
-if(count($argv) < 3)
+if(count($argv) < 2)
 {
-	echo "Usage: " . basename($argv[0]) . " gzip_to_modify english_gzip_or_csv_to_use [english_gzip_or_csv_to_use ...]\n";
+	echo "Usage: " . basename($argv[0]) . " gzip_to_modify [english_gzip_or_csv_to_use ...] [--tpl template]\n";
 	exit;
 }
 
@@ -118,6 +148,33 @@ $en_uncontextualized_changes = array();
 //count the number of English keys we want to change
 $en_count   = 0;
 
+
+function getGZIPKeyToTranslationDictionary($src)
+{
+	$k2t   = array();
+	$dir   = tempdir(); 
+	$gzip  = new Archive_Tar($src);
+	$gzip->extract($dir);
+	foreach($gzip->listContent() as $desc)
+	{
+		$filename = $desc['filename'];
+		$path     = "$dir/$filename";
+		$source   = file_get_contents($path);
+		$m = array();
+		if(preg_match('/\.php$/', $filename) and basename($filename) != 'index.php' and preg_match('/global\s+\$(_\w+)/', $source, $m))
+		{
+			$arr = $m[1];
+			include_once($path);
+			foreach($$arr as $key => $value)
+			{
+				$k2t[$key] = $value;
+			}
+		}
+	}
+	rrmdir($dir);
+	return $k2t;
+}
+
 //read a GZIP (en) file and stores the key changes in it by comparing the new string's md5 with the old md5
 function readGZIPChanges($src, &$en_changes_in_files)
 {
@@ -135,7 +192,7 @@ function readGZIPChanges($src, &$en_changes_in_files)
 		if(preg_match('/\.php$/', $filename) and basename($filename) != 'index.php' and preg_match('/global\s+\$(_\w+)/', $source, $m))
 		{
 			$arr = $m[1];
-			echo "Including $filename to extract array $arr\n";
+			//echo "Including $filename to extract array $arr\n";
 			
 			include_once($path);
 			if(!isset($en_changes_in_files[$filename]))
@@ -159,11 +216,37 @@ function readGZIPChanges($src, &$en_changes_in_files)
 			}
 			$count  = count($en_changes_in_files[$filename]);
 			$total += $count;
-			echo "$count of " . count($$arr) . " English strings were changed in the file $filename!\n\n";
+			//echo "$count of " . count($$arr) . " English strings were changed in the file $filename!\n\n";
 		}
 	}
 	rrmdir($dir);
 	return $total;
+}
+
+function CSVForEach($file, $func)
+{
+	$f = fopen($file, 'r');
+	$first_line = fgets($f);
+	rewind($f);
+
+	if(substr_count($first_line, ";") > substr_count($first_line, ","))
+	{
+		$separator=";";
+	}
+	else
+	{
+		$separator=",";
+	}
+
+	$headers = fgetcsv($f, 0, $separator);
+
+	while($row = fgetcsv($f, 0, $separator))
+	{
+		$row = array_combine($headers, $row);
+		$func($row);
+	}
+
+	fclose($f);
 }
 
 function readCSVChanges($src, &$en_uncontextualized_changes)
@@ -178,6 +261,7 @@ function readCSVChanges($src, &$en_uncontextualized_changes)
 		echo "Required headers not found in CSV (Old Key and New English Text)!\n";
 		exit;
 	}
+        	
 	while($row = fgetcsv($f))
 	{
 		$row = array_combine($headers, $row);
@@ -187,6 +271,7 @@ function readCSVChanges($src, &$en_uncontextualized_changes)
 		{
 			$md5 = $m[2];
 			$new_md5 = md5(slashify($row['New English Text']));
+			
 			if($md5 != $new_md5)
 			{
 				$en_uncontextualized_changes[$key][$m[1] . $new_md5] = 0;
@@ -232,6 +317,59 @@ for($i = 2; $i < count($argv); $i+=1)
 //the iso code of our target pack
 $iso = basename($target, ".gzip");
 
+$k2e_dictionary = array();
+$f2k_dictionary = array();
+$k2t_dictionary = array();
+
+if(isset($options['tpl']))
+{
+	CSVForEach($options['tpl'], function($row) use (&$k2e_dictionary){
+		$k2e_dictionary[$row['Array Key']] = $row['English String'];
+	});
+
+	CSVForEach($options['tpl'], function($row) use (&$f2k_dictionary, $iso){
+		if($row['Array Name'])
+		{
+			$file = str_replace('/en.php', "/$iso.php", str_replace('/en/', "/$iso/", substr($row['Storage File Path'],1)));
+			if(!isset($f2k_dictionary[$file]))
+			{
+				$f2k_dictionary[$file] = array();
+			}
+			$f2k_dictionary[$file][] = $row['Array Key'];
+		}
+	});
+
+	$k2t_dictionary = getGZIPKeyToTranslationDictionary($target);
+}
+
+$e2t_dictionary = array();
+foreach($k2e_dictionary as $key => $english)
+{
+	if(isset($k2t_dictionary[$key]))
+	{
+		$e2t_dictionary[$english] = $k2t_dictionary[$key];
+	}
+}
+
+/*
+foreach($en_changes_in_files as $file => $changes)
+{
+	foreach($changes as $old_key => $new_keys)
+	{
+		foreach($new_keys as $new_key)
+		{
+			if(isset($k2e_dictionary[$new_key]) and !isset($k2e_dictionary[$old_key]))
+			{
+				$k2e_dictionary[$old_key] = $k2e_dictionary[$new_key];
+			}
+			if(isset($k2e_dictionary[$old_key]) and !isset($k2e_dictionary[$new_key]))
+			{
+				$k2e_dictionary[$new_key] = $k2e_dictionary[$old_key];
+			}
+		}
+	}
+}*/
+
 //output file, in current directory (warning!!)
 $dst = "$iso.gzip";
 if(file_exists($dst))
@@ -246,11 +384,16 @@ $target_gzip = new Archive_Tar($target);
 
 $target_gzip->extract($dir);
 
+$autofilled = 0;
+
+$missing = 0;
+$total   = 0;
+
 foreach($target_gzip->listContent() as $desc)
 {
 	$filename = $desc['filename'];
 	$path     = "$dir/$filename";
-	echo "Changing keys in file $filename...\n";
+	//echo "Changing keys in file $filename...\n";
 
 	$en_filename = str_replace("/$iso.php", '/en.php', str_replace("/$iso/", '/en/', $filename));
 	
@@ -306,13 +449,50 @@ foreach($target_gzip->listContent() as $desc)
 
 		$source  = "<?php\n\nglobal \$$arr;\n\$$arr = array();";
 
+		$missing_in_file = 0;
+		$total_in_file   = 0;
+		if(isset($options['tpl']))
+		{
+			if(isset($f2k_dictionary[$filename]))
+			{
+				foreach($f2k_dictionary[$filename] as $key)
+				{
+					if(!isset($options['tpl']) or isset($k2e_dictionary[$key]))
+					{
+						if(!isset($lang[$key]))
+						{
+							if(isset($e2t_dictionary[$k2e_dictionary[$key]]))
+							{
+								//echo $k2e_dictionary[$key] . " => " . $e2t_dictionary[$k2e_dictionary[$key]] . "\n";
+								$lang[$key] = $e2t_dictionary[$k2e_dictionary[$key]];
+								$autofilled += 1;
+							}
+							else
+							{
+								$missing_in_file+=1;
+								$missing += 1;
+							}
+						}
+						$total_in_file += 1;
+						$total += 1;
+					}
+				}
+			}
+		}
+		
+		echo "File $filename: missing $missing_in_file of $total_in_file.\n";
+
 		foreach($lang as $key => $translation)
 		{
-			$source .= "\n\$$arr"."['" . slashify($key) . "'] = '". slashify($translation) . "';";
+			//remove useless keys if template was specified
+			if(!isset($options['tpl']) or isset($k2e_dictionary[$key]))
+			{
+				$source .= "\n\$$arr"."['" . slashify($key) . "'] = '". slashify($translation) . "';";
+			}
 		}
 		$source .= "\n";
 
-		echo "Changed $nreplaced keys in file $filename!\n\n";
+		//echo "Changed $nreplaced keys in file $filename!\n\n";
 	}
 
 	//$new_target_gzip->addString($filename, $source);
@@ -358,6 +538,8 @@ foreach($en_changes_in_files as $file => $changes)
 
 $show_not_used($en_uncontextualized_changes);
 
-echo "\nChanged $count keys in '$target' (of $en_count)\n";
+echo "\nChanged $count keys in '$target' (of $en_count).\n";
+echo "\n$autofilled translations were autocompleted.\n";
+echo "Missing $missing of $total translations.\n";
 
 //that's all folks!
