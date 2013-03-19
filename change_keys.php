@@ -121,6 +121,13 @@ function getOpts()
 	return $options;
 }
 
+function my_fputcsv($handle, $data)
+{
+	fputs($handle, implode(',', array_map(function($cell){
+		return '"' . str_replace('"', '""', $cell) . '"';
+	}, $data)) . "\n");
+}
+
 /************************************************/
 /************************************************/
 /************************************************/
@@ -233,7 +240,7 @@ function readGZIPChanges($src, &$en_changes_in_files, &$k2e)
 	return $total;
 }
 
-function CSVForEach($file, $func)
+function CSVForEach($file, $func, $customQuote=false)
 {
 	$f = fopen($file, 'r');
 	$first_line = fgets($f);
@@ -251,10 +258,32 @@ function CSVForEach($file, $func)
 
 	$headers = fgetcsv($f, 0, $separator);
 
-	while($row = fgetcsv($f, 0, $separator))
+	if($customQuote)
 	{
-		$row = array_combine($headers, $row);
-		$func($row);
+		while($data = fgets($f))
+		{
+			$row = str_getcsv($data, $separator, '"','\\');
+			if(count($row) != count($headers))
+			{
+				$row = str_getcsv($data, $separator, '"','"');
+			}
+			if(count($row) != count($headers))
+			{
+				echo $data . "\n";
+				print_r($row);
+				print_r($headers);
+			}
+			$row = array_combine($headers, $row);
+			$func($row);
+		}
+	}
+	else
+	{
+		while($row = fgetcsv($f, 0, $separator))
+		{
+			$row = array_combine($headers, $row);
+			$func($row);
+		}
 	}
 
 	fclose($f);
@@ -290,43 +319,47 @@ function getCSVChanges($src)
 					$new_key = $m[1] . md5(slashify($new_english_text));
 				}
 			}
+		}
+		else if(false !== ($new_key = $get('New Key')) and false !== ($old_english_text = $get('Old English Text')))
+		{
+				$m = array();
+				if(preg_match('/^(.*?)([a-f0-9]{32})$/', $new_key, $m))
+				{
+					$old_key = $m[1] . md5(slashify($old_english_text));
+				}
+		}
 
-			if($old_key !== false and $new_key !== false)
+		if($old_key !== false and $new_key !== false)
+		{
+			if(false !== ($filepath = $get('File Path')))
 			{
-				if(false !== ($filepath = $get('File Path')))
+				if(!isset($contextualized[$filepath]))
 				{
-					if(!isset($contextualized[$filepath]))
-					{
-						$contextualized[$filepath] = array();
-					}
-					if(!isset($contextualized[$filepath][$old_key]))
-					{
-						$contextualized[$filepath][$old_key] = array();
-					}
-					$contextualized[$filepath][$old_key][$new_key] = 0;
+					$contextualized[$filepath] = array();
 				}
-				else
+				if(!isset($contextualized[$filepath][$old_key]))
 				{
-					if(isset($uncontextualized[$old_key]))
-					{
-						$uncontextualized[$old_key] = array();
-					}
-					$uncontextualized[$old_key][$new_key] = 0;
+					$contextualized[$filepath][$old_key] = array();
 				}
-
-				if(false !== ($new_english_text = $get('New English Text')))
-				{
-					$k2e[$new_key] = $new_english_text;
-				}
-
+				$contextualized[$filepath][$old_key][$new_key] = 0;
 			}
 			else
 			{
-				die("Oops!\n");
+				if(isset($uncontextualized[$old_key]))
+				{
+					$uncontextualized[$old_key] = array();
+				}
+				$uncontextualized[$old_key][$new_key] = 0;
+			}
+
+			if(false !== ($new_english_text = $get('New English Text')))
+			{
+				$k2e[$new_key] = $new_english_text;
 			}
 
 		}
-	});
+
+	}, true);
 	return array('contextualized' => $contextualized, 'uncontextualized' => $uncontextualized, 'k2e' => $k2e);
 }
 
@@ -359,7 +392,7 @@ function readChanges($src, &$en_changes_in_files, &$en_uncontextualized_changes,
 	if(preg_match('/^en(?:_.*?)?\.gzip$/', basename($src)))
 	{
 		echo "Found GZIP $src!\n";
-		return readGZIPChanges($src,$en_changes_in_files, $k2e);
+		return readGZIPChanges($src,$en_changes_in_files, $k2e, $md52t);
 	}
 	else if(preg_match('/\.csv$/', $src))
 	{
@@ -379,6 +412,7 @@ function readChanges($src, &$en_changes_in_files, &$en_uncontextualized_changes,
 
 //Key to English
 $k2e_dictionary = array();
+$md52t_dictionary = array();
 //reads $argv for key change files (starting at index 2)
 $en_count = 0;
 for($i = 2; $i < count($argv); $i+=1)
@@ -395,10 +429,13 @@ $f2k_dictionary = array();
 //Key to Translation
 $k2t_dictionary = array();
 
+$useful_keys = array();
+
 if(isset($options['tpl']))
 {
-	CSVForEach($options['tpl'], function($row) use (&$k2e_dictionary){
+	CSVForEach($options['tpl'], function($row) use (&$k2e_dictionary, &$useful_keys){
 		$k2e_dictionary[$row['Array Key']] = $row['English String'];
+		$useful_keys[$row['Array Key']]    = $row['English String'];
 	});
 
 	CSVForEach($options['tpl'], function($row) use (&$f2k_dictionary, $iso){
@@ -414,6 +451,14 @@ if(isset($options['tpl']))
 	});
 
 	$k2t_dictionary = getGZIPKeyToTranslationDictionary($target);
+	foreach($k2t_dictionary as $key => $translation)
+	{
+		$m = array();
+		if(preg_match('/^.*?([a-f0-9]{32})$/', $key, $m))
+		{
+			$md52t_dictionary[$m[1]] = $translation;
+		}
+	}
 }
 
 $e2t_dictionary = array();
@@ -443,6 +488,59 @@ $autofilled = 0;
 
 $missing = 0;
 $total   = 0;
+
+/**************************************************************************************/
+/**************************************************************************************/
+//not especially useful
+
+$doForAllChanges = function($func) use($en_uncontextualized_changes, $en_changes_in_files)
+{
+	foreach($en_uncontextualized_changes as $old_key => $arr)
+	{
+		foreach($arr as $new_key => $use_count)
+		{
+			$func(null, $old_key, $new_key, $use_count);
+		}
+	}
+	foreach($en_changes_in_files as $file => $array)
+	{
+		foreach($array as $old_key => $arr)
+		{
+			foreach($arr as $new_key => $use_count)
+			{
+				$func($file, $old_key, $new_key, $use_count);
+			}
+		}
+	}
+};
+
+$getMd5FromKey = function($key)
+{
+	$m = array();
+	if(preg_match('/^.*?([a-f0-9]{32})$/', $key, $m))
+	{
+		return $m[1];
+	}
+	else return false;
+};
+
+$doForAllChanges(function($file, $old_key, $new_key, $use_count) use ($getMd5FromKey, &$md52t_dictionary){
+	$ok = $getMd5FromKey($old_key);
+	$nk = $getMd5FromKey($new_key);
+	if($ok !== false and $nk !== false)
+	{
+		if(isset($md52t_dictionary[$ok]) and !isset($md52t_dictionary[$nk]))
+		{
+			$md52t_dictionary[$nk] = $md52t_dictionary[$ok];
+		}
+		if(isset($md52t_dictionary[$nk]) and !isset($md52t_dictionary[$ok]))
+		{
+			$md52t_dictionary[$ok] = $md52t_dictionary[$nk];
+		}
+	}
+});
+/**************************************************************************************/
+/**************************************************************************************/
 
 $missing_translations = array();
 
@@ -490,12 +588,6 @@ foreach($target_gzip->listContent() as $desc)
 		{
 			foreach($new_keys_1 as $new_key => &$use_count_1)
 			{
-				/*
-				if($new_key == 'AdminPerformance565cd4c2da13cbbff2415a0e81e6c391')
-				{
-					die("" . "\nbob\n");
-				}*/
-
 				if(isset($lang[$old_key]))
 				{
 					$use_count_1 += 1;
@@ -524,9 +616,15 @@ foreach($target_gzip->listContent() as $desc)
 					{
 						if(!isset($lang[$key]))
 						{
-							if(isset($e2t_dictionary[$k2e_dictionary[$key]]))
+							$m = array();
+							if(preg_match('/^.*?([a-f0-9]{32})$/', $key, $m) and isset($md52t_dictionary[$m[1]]))
 							{
 								//echo $k2e_dictionary[$key] . " => " . $e2t_dictionary[$k2e_dictionary[$key]] . "\n";
+								$lang[$key] = $md52t_dictionary[$m[1]];
+								$autofilled += 1;
+							}
+							else if(isset($k2e_dictionary[$key]) and isset($e2t_dictionary[$k2e_dictionary[$key]]))
+							{
 								$lang[$key] = $e2t_dictionary[$k2e_dictionary[$key]];
 								$autofilled += 1;
 							}
@@ -614,7 +712,7 @@ if(isset($options['dump-changes']))
 	$out = $options['dump-changes'];
 	$headers = array('File Path', 'Old Key', 'New Key', 'New English Text', 'Use Count');
 	$f = fopen($out, 'w');
-	fputcsv($f, $headers);
+	my_fputcsv($f, $headers);
 	
 	foreach($en_changes_in_files as $file => $arr)
 	{
@@ -622,23 +720,24 @@ if(isset($options['dump-changes']))
 		{
 			foreach($new_keys as $new_key => $use_count)
 			{
-				$row = array($file, $old_key, $new_key, isset($k2e_dictionary[$new_key]) ? $k2e_dictionary[$new_key] : '', $use_count);
-				fputcsv($f, $row);
+				if(!isset($options['dump-only-useful-changes']) or ($options['dump-only-useful-changes'] == 'true' and isset($useful_keys[$new_key])))
+				{
+					$row = array($file, $old_key, $new_key, isset($k2e_dictionary[$new_key]) ? $k2e_dictionary[$new_key] : '', $use_count);
+					my_fputcsv($f, $row);
+				}
 			}
 		}
 	}
-	/*echo "???? =>\n";
-	print_r($en_uncontextualized_changes['AdminPerformanceea3552401a65fd61c45745b3345b12f0']);*/
 
 	foreach($en_uncontextualized_changes as $old_key => $new_keys)
 	{
 		foreach($new_keys as $new_key => $use_count)
 		{
-			/*if(!isset($options['tpl']) or(isset($k2e_dictionary[$new_key])))
-			{*/
+			if(!isset($options['dump-only-useful-changes']) or ($options['dump-only-useful-changes'] == 'true' and isset($useful_keys[$new_key])))
+			{
 				$row = array('', $old_key, $new_key, isset($k2e_dictionary[$new_key]) ? $k2e_dictionary[$new_key] : '', $use_count);
-				fputcsv($f, $row);
-			//}
+				my_fputcsv($f, $row);
+			}
 		}
 	}
 
@@ -650,11 +749,11 @@ if(isset($options['dump-missing']))
 	$out = $options['dump-missing'];
 	$f 	 = fopen($out, 'w');
 
-	fputcsv($f, array('Key', 'English String'));
+	my_fputcsv($f, array('Key', 'English String'));
 
 	foreach($missing_translations as $key => $value)
 	{
-		fputcsv($f, array($key, $value));
+		my_fputcsv($f, array($key, $value));
 	}
 
 	fclose($f);
