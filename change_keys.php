@@ -148,7 +148,7 @@ $en_uncontextualized_changes = array();
 //count the number of English keys we want to change
 $en_count   = 0;
 
-
+//takes a GZIP, returns an array with translation keys as keys and translations as values
 function getGZIPKeyToTranslationDictionary($src)
 {
 	$k2t   = array();
@@ -229,6 +229,7 @@ function CSVForEach($file, $func)
 	$first_line = fgets($f);
 	rewind($f);
 
+	//guess separator
 	if(substr_count($first_line, ";") > substr_count($first_line, ","))
 	{
 		$separator=";";
@@ -317,8 +318,11 @@ for($i = 2; $i < count($argv); $i+=1)
 //the iso code of our target pack
 $iso = basename($target, ".gzip");
 
+//Key to English
 $k2e_dictionary = array();
+//File to Key ([filename => [key1, ..., keyN]])
 $f2k_dictionary = array();
+//Key to Translation
 $k2t_dictionary = array();
 
 if(isset($options['tpl']))
